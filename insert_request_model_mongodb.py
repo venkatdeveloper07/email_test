@@ -1,29 +1,6 @@
-from sentence_transformers import SentenceTransformer, util
-import re
 from pymongo import MongoClient
 
-class LoanEmailProcessor:
-    """Processes loan emails, saves them to MongoDB, and retrieves/classifies them."""
-
-    def __init__(self, mongo_uri="mongodb://localhost:27017/", db_name="loan_emails", collection_name="emails", model_name='all-mpnet-base-v2'):
-        """Initializes the processor with MongoDB connection and Sentence Transformer model."""
-        self.client = MongoClient(mongo_uri)
-        self.db = self.client[db_name]
-        self.email_collection = self.db[collection_name]
-        self.model = SentenceTransformer(model_name)
-        self.loan_model_collection = self.db["loan_models"] # Collection for loan model
-
-        self.loan_request_model = self._load_loan_model()
-        self.category_embeddings = self._embed_categories()
-
-    def _load_loan_model(self):
-        """Loads the loan request model from MongoDB."""
-        model_doc = self.loan_model_collection.find_one({"model_id": "loan_model"}) # assuming there is a doc with model_id "loan_model"
-        if model_doc:
-            return model_doc["model"]
-        else:
-            # Default model if not found in MongoDB
-            default_model = {
+loan_request_model = {
             "Loan Application/Origination Requests": {
                 "New Loan Application": {
                     "keywords": ["new loan", "apply for loan", "loan application", "mortgage application", "personal loan application", "auto loan application"],
@@ -153,91 +130,28 @@ class LoanEmailProcessor:
                 }
             }
         }
-        return default_model
 
-    def _embed_categories(self):
-        """Pre-computes embeddings for category descriptions."""
-        embeddings = {}
-        for category, subcategories in self.loan_request_model.items():
-            for subcategory, data in subcategories.items():
-                embeddings[(category, subcategory)] = self.model.encode(data["description"])
-        return embeddings
+def insert_loan_model(mongo_uri="mongodb://localhost:27017/", db_name="loan_emails", collection_name="loan_models"):
+    """Inserts the loan_request_model into MongoDB."""
+    try:
+        client = MongoClient(mongo_uri)
+        db = client[db_name]
+        collection = db[collection_name]
 
-    def save_email(self, email_id, subject, body, attachments=None):
-        """Saves an email to MongoDB, preventing duplicates."""
-        if self.email_collection.find_one({"email_id": email_id}):
-            print(f"Email with ID {email_id} already exists. Skipping insertion.")
-            return
-
-        email_data = {
-            "email_id": email_id,
-            "subject": subject,
-            "body": body,
-            "attachments": attachments or [],
-        }
-        self.email_collection.insert_one(email_data)
-
-    def get_email(self, email_id):
-        """Retrieves an email from MongoDB by email_id."""
-        return self.email_collection.find_one({"email_id": email_id})
-
-    def process_email(self, email_id):
-        """Retrieves, classifies, and extracts fields from an email."""
-        email = self.get_email(email_id)
-        if not email:
-            return None
-
-        email_text = email["subject"] + " " + email["body"]
-        if email["attachments"]:
-            email_text += " " + " ".join(email["attachments"])
-
-        email_embedding = self.model.encode(email_text)
-
-        similarities = {}
-        for (category, subcategory), embedding in self.category_embeddings.items():
-            similarities[(category, subcategory)] = util.cos_sim(email_embedding, embedding).item()
-
-        best_match = max(similarities, key=similarities.get)
-        confidence = similarities[best_match]
-        category, subcategory = best_match
-
-        extracted_fields = self._extract_fields(email_text)
-
-        return {
-            "category": category,
-            "subcategory": subcategory,
-            "confidence": confidence,
-            "extracted_intent": self.loan_request_model[category][subcategory]["description"],
-            "extracted_fields": extracted_fields,
+        model_document = {
+            "model_id": "loan_model",  # Unique identifier for the model
+            "model": loan_request_model,
         }
 
-    def _extract_fields(self, text):
-        """Extracts relevant fields (amounts, account numbers, dates) from text."""
-        fields = {}
-        amount_matches = re.findall(r'\$\d+(?:,\d+)?(?:\.\d+)?', text)
-        if amount_matches:
-            fields["loan_amounts"] = amount_matches
-        account_matches = re.findall(r'\b\d{8,16}\b', text)
-        if account_matches:
-            fields["account_numbers"] = account_matches
-        date_matches = re.findall(r'\d{2}[/-]\d{2}[/-]\d{4}', text)
-        if date_matches:
-            fields["dates"] = date_matches
-        return fields
+        # Insert the document
+        result = collection.insert_one(model_document)
+        print(f"Loan model inserted with ID: {result.inserted_id}")
+
+    except Exception as e:
+        print(f"Error inserting loan model: {e}")
+    finally:
+        if 'client' in locals() and client:
+            client.close()
 
 # Example Usage:
-processor = LoanEmailProcessor()
-
-# Save emails to MongoDB:
-processor.save_email("EML0001", "New Mortgage Application Inquiry", "I want to get a home loan.", ["My account number is 12345678. I want a loan of $200000 by 12/25/2024"])
-processor.save_email("EML0002", "Payment Inquiry", "When is my next payment due?", ["My payment is $500. Due date is 04/01/2024"])
-
-# Retrieve and process emails:
-result1 = processor.process_email("EML0001")
-print(result1)
-
-result2 = processor.process_email("EML0002")
-print(result2)
-
-result_not_found = processor.process_email("EML0003")
-print(result_not_found)
+insert_loan_model()
