@@ -1,9 +1,6 @@
 from sentence_transformers import SentenceTransformer, util
 import re
 from pymongo import MongoClient
-import io
-import pandas as pd
-import msg_parser
 
 
 class LoanEmailProcessor:
