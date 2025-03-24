@@ -5,4 +5,4 @@ pip install sentence-transformers
 <br>
 pip install pymongo
 
-run python analyze_type_subtype_gemini.py
+run python analyze_type_subtypes.py
